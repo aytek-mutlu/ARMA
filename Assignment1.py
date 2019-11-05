@@ -33,15 +33,29 @@ def read_clean_data(stocks,filename):
     df  = pd.read_csv('data/'+filename+'.csv', index_col='date',parse_dates=['date'],dayfirst=False)
     df = df[[s+'-V' for s in stocks]]
     
-    ## clean data
-    
-    #take natural log
+    ##take natural log
     df = np.log(df)
-    ##TO BE COMPLETED
     
+    ##plot data initially
+    df.plot(figsize=(10,3))
     
+    ## DATA CLEANING
     
+    #no missing values
     
+    print(df.info())
+    
+    #histogram of data
+    df.plot.hist(bins=30)
+    
+    #check outliers
+    inter_quartile_range = (df.describe().loc['75%'] - df.describe().loc['25%']).values
+    outlier_min_limit = df.describe().loc['25%'].values - 1.5*inter_quartile_range
+    outlier_max_limit = df.describe().loc['75%'].values + 1.5*inter_quartile_range
+    outliers = df[np.logical_or((df>outlier_max_limit).values,(df<outlier_min_limit).values)]
+    
+    #outliers is empty so there are no outliers according to Tukey test
+
     return df
 
 def plot_summarize_data(df):
@@ -54,13 +68,9 @@ def plot_summarize_data(df):
         
     '''
     ##plot volumes
-    fig,(ax1,ax2,ax3) = plt.subplots(1,3,figsize=(30,3))
-    ax1.plot(df.iloc[:,0])
-    ax1.set_title('MSFT Volume')
-    ax2.plot(df.iloc[:,1])
-    ax2.set_title('IBM Volume')
-    ax3.plot(df.iloc[:,2])
-    ax3.set_title('AAPL Volume')
+    fig,ax = plt.subplots(figsize=(10,3))
+    ax.plot(df)
+    ax.set_title(df.columns[0]+' Volume')
     plt.savefig('plots.png')
     
     ##TO BE DONE -> correct digits
@@ -68,18 +78,21 @@ def plot_summarize_data(df):
     
     ##summarize data
     df_desc = describe(df)
-    df_summary = pd.DataFrame(columns = df.columns,index=['Min','Max','Mean','Std. Deviation','Skewness','Kurtosis'])
-    df_summary.loc['Min'] = df_desc[1][0]
-    df_summary.loc['Max'] = df_desc[1][1]
+    df_summary = pd.DataFrame(columns = df.columns,index=['Mean','Std. Deviation','Min','Max','Skewness','Kurtosis'])
+
     df_summary.loc['Mean'] = df_desc[2]
     df_summary.loc['Std. Deviation'] = np.sqrt(df_desc[3])
+    df_summary.loc['Min'] = df_desc[1][0]
+    df_summary.loc['Max'] = df_desc[1][1]
     df_summary.loc['Skewness'] = df_desc[4]
     df_summary.loc['Kurtosis'] = df_desc[5]
+    
+    return df_summary
     
 def LL_PredictionErrorDecomposition(vP,vY,p,q):
     
     #parameter decomposition
-    mu = vP[0]
+    m = vP[0]
     phis = vP[1:p+1]
     thetas = vP[p+1:p+q+1]
     sigma = vP[-1]
@@ -108,32 +121,35 @@ def LL_PredictionErrorDecomposition(vP,vY,p,q):
       
         #combine both effects to find vE
         if i>0:
-            vE[i] = vY[i] - mu  - vEp - vEq
+            vE[i] = vY[i] - m  - vEp - vEq
         
-    ##change this, not start from 0 but from max(p,q) the rest will be calculated different
     return -0.5*(np.log(2*math.pi*(sigma**2))*iY + np.sum(vE*vE/(sigma**2)))
-    ##for initial values, assume stationarity and therefore use unconditional mean
-    ## place formula and then calculate unconditional mean for initial values
-    ## initial m is (1-sum(phis))/mu
-    ## initial variance is difference
-        
 
     
-def ARMA_compute(df,stock,year,p,q):
+def ARMA_compute(df,stock,year,p,q,vP):
     vY = df.loc[str(year):str(year+10),stock]
     
-    #list OF initial parameters based on p and q
-    vP0 = np.ones(p+q+2)
+    #list of initial parameters based on p and q
+    if (p==1) & (q==1) :
+        vP0 = [vP[0],1,vP[2][0],vP[3]]
+    elif (p==0) & (q==0):
+        vP0 = [vP[0],vP[3]]
+    elif (p==0) & (q==1):
+        vP0 = [vP[0],1,vP[3]]
+    elif (p==1) & (q==0):
+        vP0 = [vP[0],1,vP[3]]
+
     
     #minimizing function
-    sumLL= lambda vP: -LL_PredictionErrorDecomposition(vP, vY,p,q)  
+    sumLL= lambda vP: -LL_PredictionErrorDecomposition(vP,vY,p,q)  
     res= opt.minimize(sumLL, vP0, method="BFGS")
     print('Parameters are estimated by ML for '+stock+' for decade '+ str(year) + ' with p: '+str(p)+' and q: ' + str(q)+'\n')
     #parameter estimates
     phis = res.x[1:p+1]
-    mu = res.x[0]
+    m = res.x[0]
     thetas = res.x[p+1:p+q+1]
-    params = [mu,phis,thetas]
+    sigma = res.x[-1]
+    params = [m,phis,thetas,sigma]
     
     #scores
     aic = res.fun*2+2*len(res.x)
@@ -145,7 +161,17 @@ def ARMA_compute(df,stock,year,p,q):
     cov_matrix = -np.linalg.inv(hes)
     std_errors = list(np.sqrt(np.diag(cov_matrix)))
     
-    return [scores,params,std_errors]
+    #sandwich form robust std. errors
+    hes = -hessian_2sided(sumLL,res.x)
+    mHI = np.linalg.inv(hes)
+    mHI = (mHI + mHI.T)/2
+    mG = jacobian_2sided(sumLL,res.x)
+    
+    cov_matrix_sandwich = mHI @ (mG.T @ mG) @ mHI
+    std_errors_sandwich = list(np.sqrt(np.diag(cov_matrix_sandwich)))
+
+    
+    return [scores,params,std_errors],params
 
 
 def ARMA_package(df,stock,year,p,q):
@@ -157,11 +183,10 @@ def ARMA_package(df,stock,year,p,q):
     #parameter estimates
     phis = model.params[1:p+1]
     
-    #!!!!!!!!!!!!!!!!!!!explain this better
-    mu = (1-np.sum(phis))*model.params[0]
-    #!!!!!!!!!
+    m = (1-np.sum(phis))*model.params[0]
     thetas = model.params[p+1:p+q+1]
-    params = [mu,phis,thetas]
+    sigma = np.sqrt(model.sigma2)
+    params = [m,phis,thetas,sigma]
 
     #scores
     scores = [model.aic,model.bic]
@@ -178,7 +203,9 @@ def interpret_results(df):
     df.rename(columns={'level_0':'Stock','level_1':'Decade','level_2':'p','level_3':'q'},inplace=True)
     
     df[['AIC','BIC']] = pd.DataFrame(df.scores.values.tolist(), index= df.index)
-    df['mu'] = [i[0] for i in df.params]
+    df['m'] = [i[0] for i in df.params]
+    df['m_se'] = [i[0] for i in df.std_errors]
+    
     
     for j in range(max(df.p)):
         df['phi_'+str(j+1)]= [param[1][j] if p>=(j+1) else np.nan for param,p in zip(df.params,df.p) ]
@@ -188,6 +215,10 @@ def interpret_results(df):
         df['theta_'+str(j+1)]= [param[2][j] if q>=(j+1) else np.nan for param,q in zip(df.params,df.q)]
         df['theta_'+str(j+1)+'_se']= [std_errors[j+p+1] if q>=(j+1) else np.nan for std_errors,p,q in zip(df.std_errors,df.p,df.q) ]
 
+    df['sigma_squared'] = [pow(i[3],2) for i in df.params]
+    df['sigma_squared_se'] = [i[-1] for i in df.std_errors]
+
+    
     df.drop(columns=['scores','params','std_errors'],inplace=True)
         
     return df
@@ -197,35 +228,45 @@ def interpret_results(df):
 ### main
 def main():
     
-    stocks = ['MSFT','IBM','AAPL']
+    stocks = ['AAPL']
     filename = 'volumes'
     ##read and clean data
     df = read_clean_data(stocks,filename)
     
     ##plot and extract main descriptives
-    plot_summarize_data(df)
+    print(plot_summarize_data(df))
     
     #data and model input combinations
     stocks = list(df.columns)
     years = [1990,2000,2010]
-        
-    ps=[0,1]
-    qs=[0,1]
+    
+    #list of possible p and q values    
+    p_list=[0,1]
+    q_list=[0,1]
     
     #output dfs
-    results  = pd.DataFrame(index = pd.MultiIndex.from_product([stocks,years,ps,qs]),columns=['scores','params','std_errors'])
+    results  = pd.DataFrame(index = pd.MultiIndex.from_product([stocks,years,p_list,q_list]),columns=['scores','params','std_errors'])
     results_package  = copy.deepcopy(results)
-    
+    stock = stocks[0]    
 
     #ARMA estimates by computation and package
-    for stock,year,p,q in results.index :
+    for year in years:
+        vP = [np.ones(1),[],[],np.ones(1)]
         ##ARMA by computation
-        results.loc[stock,year,p,q] = ARMA_compute(df,stock,year,p,q)
-        ##ARMA by packages
-        results_package.loc[stock,year,p,q] = ARMA_package(df,stock,year,p,q)
+        results.loc[stock,year,0,0],vP_noise = ARMA_compute(df,stock,year,0,0,vP)
+        results.loc[stock,year,0,1],vP_01 = ARMA_compute(df,stock,year,0,1,vP_noise)
+        results.loc[stock,year,1,0],vP_10 = ARMA_compute(df,stock,year,1,0,vP_noise)
+        results.loc[stock,year,1,1],vP_11 = ARMA_compute(df,stock,year,1,1,vP_01)
 
-    results = interpret_results(results)
-    results_package = interpret_results(results_package)
+        ##ARMA by packages
+        results_package.loc[stock,year,0,0] = ARMA_package(df,stock,year,0,0)
+        results_package.loc[stock,year,0,1] = ARMA_package(df,stock,year,0,1)
+        results_package.loc[stock,year,1,0] = ARMA_package(df,stock,year,1,0)
+        results_package.loc[stock,year,1,1] = ARMA_package(df,stock,year,1,1)
+
+
+    results_final = interpret_results(results)
+    results_package_final = interpret_results(results_package)
 
     #TODO:
     #calculating std. errors with robust sandwich
