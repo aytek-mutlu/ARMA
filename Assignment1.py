@@ -126,8 +126,8 @@ def ARMA_compute(df,stock,year,p,q):
     vP0 = np.ones(p+q+2)
     
     #minimizing function
-    avgLL= lambda vP: -LL_PredictionErrorDecomposition(vP, vY,p,q)  
-    res= opt.minimize(avgLL, vP0, method="BFGS")
+    sumLL= lambda vP: -LL_PredictionErrorDecomposition(vP, vY,p,q)  
+    res= opt.minimize(sumLL, vP0, method="BFGS")
     print('Parameters are estimated by ML for '+stock+' for decade '+ str(year) + ' with p: '+str(p)+' and q: ' + str(q)+'\n')
     #parameter estimates
     phis = res.x[1:p+1]
@@ -141,7 +141,7 @@ def ARMA_compute(df,stock,year,p,q):
     scores = [aic,bic]
     
     #hessian and std. errors
-    hes = -hessian_2sided(avgLL,res.x)
+    hes = -hessian_2sided(sumLL,res.x)
     cov_matrix = -np.linalg.inv(hes)
     std_errors = list(np.sqrt(np.diag(cov_matrix)))
     
@@ -171,6 +171,28 @@ def ARMA_package(df,stock,year,p,q):
     
     return [scores,params,std_errors]
 
+
+def interpret_results(df):
+    
+    df.reset_index(inplace=True)
+    df.rename(columns={'level_0':'Stock','level_1':'Decade','level_2':'p','level_3':'q'},inplace=True)
+    
+    df[['AIC','BIC']] = pd.DataFrame(df.scores.values.tolist(), index= df.index)
+    df['mu'] = [i[0] for i in df.params]
+    
+    for j in range(max(df.p)):
+        df['phi_'+str(j+1)]= [param[1][j] if p>=(j+1) else np.nan for param,p in zip(df.params,df.p) ]
+        df['phi_'+str(j+1)+'_se']= [std_errors[j+1] if p>=(j+1) else np.nan for std_errors,p in zip(df.std_errors,df.p) ]
+        
+    for j in range(max(df.q)):
+        df['theta_'+str(j+1)]= [param[2][j] if q>=(j+1) else np.nan for param,q in zip(df.params,df.q)]
+        df['theta_'+str(j+1)+'_se']= [std_errors[j+p+1] if q>=(j+1) else np.nan for std_errors,p,q in zip(df.std_errors,df.p,df.q) ]
+
+    df.drop(columns=['scores','params','std_errors'],inplace=True)
+        
+    return df
+    
+    
     
 ### main
 def main():
@@ -186,6 +208,7 @@ def main():
     #data and model input combinations
     stocks = list(df.columns)
     years = [1990,2000,2010]
+        
     ps=[0,1]
     qs=[0,1]
     
@@ -201,7 +224,11 @@ def main():
         ##ARMA by packages
         results_package.loc[stock,year,p,q] = ARMA_package(df,stock,year,p,q)
 
+    results = interpret_results(results)
+    results_package = interpret_results(results_package)
 
+    #TODO:
+    #calculating std. errors with robust sandwich
 
 ### start main
 if __name__ == "__main__":
